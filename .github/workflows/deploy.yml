@@ -29,7 +29,7 @@ jobs:
           test -n "$DEPLOY_CONFIG_JSON" || { echo "Missing Actions secret DEPLOY_CONFIG_JSON"; exit 1; }
           DEPLOY_HOST="$(jq -er '.host | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
           DEPLOY_USER="$(jq -er '.user | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
-          SSH_PRIVATE_KEY="$(jq -er '.private_key | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
+          SSH_PRIVATE_KEY="$(jq -er 'if (.private_key | type) == "array" then (.private_key | join("\n")) elif (.private_key | type) == "string" then .private_key else error("private_key must be a string or an array of lines") end | select(length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
