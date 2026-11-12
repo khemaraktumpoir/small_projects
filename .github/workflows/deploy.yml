@@ -1,4 +1,4 @@
-name: Build and deploy container to AWS
+name: Build and deploy container to EC2 via GHCR
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: aws-container-deploy
@@ -36,27 +37,38 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-      - name: Build container image
-        run: docker build --tag beginner-projects:${GITHUB_SHA} .
-
-      - name: Transfer image to AWS server
+      - name: Install Docker on AWS server
         env:
           DEPLOY_CONFIG_JSON: ${{ secrets.DEPLOY_CONFIG_JSON }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
         run: |
           set -eu
           DEPLOY_HOST="$(jq -er '.host | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
           DEPLOY_USER="$(jq -er '.user | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
-          docker save "beginner-projects:${GITHUB_SHA}" | \
-            ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" 'docker load'
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" 'set -eu; if ! command -v docker >/dev/null 2>&1; then sudo apt-get update; sudo apt-get install -y docker.io; fi; sudo systemctl enable --now docker; sudo usermod -aG docker "$USER"'
+
+      - name: Set image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/clock-app" >> "$GITHUB_OUTPUT"
+
+      - name: Log in, build, and push image to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+        run: |
+          set -eu
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          IMAGE="$IMAGE_NAME:${GITHUB_SHA}"
+          docker build --tag "$IMAGE" .
+          docker push "$IMAGE"
 
       - name: Start container on AWS server
         env:
           DEPLOY_CONFIG_JSON: ${{ secrets.DEPLOY_CONFIG_JSON }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
         run: |
           set -eu
           DEPLOY_HOST="$(jq -er '.host | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
           DEPLOY_USER="$(jq -er '.user | select(type == "string" and length > 0)' <<< "$DEPLOY_CONFIG_JSON")"
+          IMAGE="$IMAGE_NAME:${GITHUB_SHA}"
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "docker rm -f beginner-projects >/dev/null 2>&1 || true; docker run -d --restart unless-stopped --name beginner-projects -p 80:80 beginner-projects:${GITHUB_SHA}"
+            "docker pull '$IMAGE' && (docker rm -f beginner-projects >/dev/null 2>&1 || true) && docker run -d --restart unless-stopped --name beginner-projects -p 80:80 '$IMAGE'"
